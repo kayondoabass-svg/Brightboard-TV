@@ -77,6 +77,21 @@ npx tsc -p tsconfig.json
 
 ### Phone/tablet remote: the QR workflow
 
+**Pair** first shows the actual UTF-8 serialized `.bbtv` and relay sizes.
+Sharing is limited to 12 MB (12 × 1024 × 1024 bytes), with an 8 MB limit per
+encoded image/model. Portable imports and direct local-file saves allow 64 MB.
+If a presentation is too large, choose **Generate optimized preview** to make
+an optional resized/compressed image copy. Compare each page's images before
+downloading the separate `-optimized.bbtv` file or choosing **Open optimized copy**
+to share it. The original is backed up in device recovery copies before opening
+the new lesson; linked local files and account copies are never overwritten by
+optimization. Page order, editable objects and positions, private notes, ink and
+3D models are preserved. Models and GIFs are not compressed. Unsupported or
+unreadable images, and images that would grow, stay unchanged. A copy can still
+exceed the limits; reduce models separately or split the lesson if needed.
+Recovery downloads remain available above 64 MB, but cannot be imported until
+reduced.
+
 1. On the presentation computer, start a sharing session.
 2. Scan the QR with the phone's camera, or open the remote link and enter the
    session ID and six-digit pairing code.
@@ -107,6 +122,64 @@ pairing, new AI generation and uncached external resources cannot. Browser
 storage quotas/cleanup/private mode may remove local data: keep `.bbtv` backups.
 The service worker deliberately does not cache `/api/` responses or any account,
 payment or private BrightBoard service.
+
+### Large lessons and local files
+
+Hosted presentations allow **20 pages free**, **50 with a verified standard paid
+BrightBoard subscription**, or **100 with an active institution plan**. The owner
+uses the same bounded 100-page ceiling, not an unlimited bypass.
+The independent standalone defaults to 20 pages,
+without requiring an account. Limits apply to new/duplicated pages, imports,
+merges and presentation sharing. Older larger documents are never truncated:
+they remain available for editing down or backup export, but must fit the current
+limit before presenting. An imported PDF can replace the untouched empty starter.
+
+### PowerPoint import
+
+Use **Library → Choose file to open** or **Choose file to merge** for `.pptx`.
+Processing happens on your device, without a conversion service. Slide order,
+supported text boxes, embedded PNG/JPEG/WebP/GIF images, basic shape outlines and
+private speaker notes are imported. Progress and cancellation are available.
+The existing lesson is not changed until the import has been prepared and checked.
+
+This is not a full PowerPoint renderer: master layouts, backgrounds, fonts, fills,
+rotation, cropping, charts, groups, tables, animations, video and vector images
+may differ or be omitted. Read the import notes. For faithful appearance, export
+PowerPoint to PDF first and import that PDF. Legacy binary `.ppt` files must first
+be saved as `.pptx` or PDF in PowerPoint/LibreOffice.
+
+Files are limited to 25 MB, with bounded archive expansion, image memory and
+lesson size. External linked assets are never fetched. Page limits apply before
+import and again when merging; an oversized import never truncates existing work.
+
+Drafts and the device library use IndexedDB, not the small localStorage quota.
+Existing localStorage drafts, saved lessons and names migrate automatically;
+the original copies are removed only after migration has committed successfully.
+The header reports the actual save result. If saving fails, keep the editor open
+and download a `.bbtv` backup before closing it.
+
+For direct access to a file on your computer, open **More tools**:
+
+1. Choose **Open local .bbtv file** to select an existing presentation, or
+   **Save directly to local file** to choose a new file.
+2. Grant the browser permission when prompted. Further saves of that presentation
+   update the chosen file; this is an explicit save, not continuous file autosave.
+3. Opening another lesson does not overwrite the previously linked file.
+
+Direct file pickers require a supported browser, typically desktop Chrome or Edge,
+and HTTPS or `http://localhost`. On unsupported phones, tablets, browsers or plain
+HTTP LAN addresses, use **Saved lessons & import** and **Download .bbtv backup**.
+The standalone app never gains unrestricted access to your disk. File saving and
+exports remain free; paid BrightBoard library controls do not apply to standalone.
+Portable lesson imports are limited to 64 MB; individual PDFs, images and models
+retain their 25 MB limit.
+
+**Clear current page** asks for confirmation and removes its drawings, text,
+images and model while preserving private notes and other pages. **Delete page**
+also asks for confirmation; deleting the last page creates a blank replacement.
+Undo can restore these page edits. **Clear local data** is a separate,
+non-undoable reset of the device workspace; it never deletes an account or a
+file saved outside the browser.
 
 ## Privacy and security
 
