@@ -1,14 +1,16 @@
 import type { Lesson, Page, StageState } from "./types";
 import { initialState, newLesson } from "./types";
+import { assertPageLimit, FREE_PAGE_LIMIT, LEGACY_PAGE_LIMIT } from "./page-limits";
 
 export const MAX_FILE = 25 * 1024 * 1024;
+export const MAX_LESSON_FILE = 64 * 1024 * 1024;
 const unit = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 1;
 const embeddedAsset = (src: unknown, pattern: RegExp) => typeof src === "string" && pattern.test(src) && dataUrlBytes(src) <= MAX_FILE;
 export function validLesson(value: unknown): value is Lesson {
   if (!value || typeof value !== "object") return false;
   const x = value as Lesson;
   return x.format === "brightboard-tv" && x.version === 1 && typeof x.id === "string" && typeof x.title === "string" &&
-    x.title.length > 0 && x.title.length <= 200 && typeof x.updatedAt === "string" && Array.isArray(x.pages) && x.pages.length > 0 && x.pages.length <= 60 &&
+    x.title.length > 0 && x.title.length <= 200 && typeof x.updatedAt === "string" && Array.isArray(x.pages) && x.pages.length > 0 && x.pages.length <= LEGACY_PAGE_LIMIT &&
     x.pages.every((p: Page) => p && typeof p.id === "string" && typeof p.title === "string" && p.title.length <= 200 &&
       ["light", "dark", "lined", "grid"].includes(p.background) && Array.isArray(p.ink) && p.ink.length <= 2000 &&
       p.ink.every(s => s && typeof s.id === "string" && /^#[\da-f]{6}$/i.test(s.color) && Number.isFinite(s.width) && s.width >= .1 && s.width <= 100 &&
@@ -17,7 +19,7 @@ export function validLesson(value: unknown): value is Lesson {
         ["text", "image", "rect", "ellipse", "line", "arrow"].includes(o.type) && unit(o.x) && unit(o.y) &&
         typeof o.width === "number" && Number.isFinite(o.width) && o.width >= 0 && o.width <= 1 &&
         typeof o.height === "number" && Number.isFinite(o.height) && o.height >= 0 && o.height <= 1 &&
-        /^#[\da-f]{6}$/i.test(o.color) && (o.type !== "image" || embeddedAsset(o.src, /^data:image\/(?:png|jpeg|webp);base64,/)) &&
+        /^#[\da-f]{6}$/i.test(o.color) && (o.type !== "image" || embeddedAsset(o.src, /^data:image\/(?:png|jpeg|webp|gif);base64,/)) &&
         (o.fontSize === undefined || Number.isFinite(o.fontSize)) && (o.text === undefined || typeof o.text === "string")) &&
       typeof p.notes === "string" && p.notes.length <= 20000 &&
       (p.model === undefined || (p.model && typeof p.model.src === "string" &&
@@ -30,6 +32,20 @@ export function lessonFromJSON(input: string): Lesson {
   const value = JSON.parse(input);
   if (!validLesson(value)) throw new Error("This file is not a valid BrightboardTV lesson.");
   return value;
+}
+export function mergeLessonPages(current: Lesson, imported: Lesson, createId: () => string = () => crypto.randomUUID(), pageLimit = FREE_PAGE_LIMIT): Lesson {
+  assertPageLimit(current.pages.length + imported.pages.length, pageLimit);
+  const pages = imported.pages.map(page => ({
+    ...page,
+    id: createId(),
+    ink: page.ink.map(stroke => ({ ...stroke, id: createId(), points: stroke.points.map(point => ({ ...point })) })),
+    objects: page.objects.map(object => ({ ...object, id: createId() })),
+    model: page.model ? {
+      ...page.model,
+      hotspots: page.model.hotspots.map(hotspot => ({ ...hotspot, id: createId() })),
+    } : undefined,
+  }));
+  return { ...current, pages: [...current.pages, ...pages] };
 }
 export function stageFor(lesson: Lesson): StageState { return initialState(lesson); }
 export function downloadBlob(blob: Blob, name: string) {
@@ -50,7 +66,7 @@ export async function fileToModelDataUrl(file: File): Promise<string> {
   if (file.size > MAX_FILE) throw new Error("Model must be 25 MB or smaller.");
   const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...Array.from(bytes.subarray(i, i + 0x8000)));
   return `data:model/gltf-binary;base64,${btoa(binary)}`;
 }
 export function freshLesson() { return newLesson(); }

@@ -2,11 +2,13 @@ import { Router, type Response, type Request } from "express";
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import type { StageState, Command, RelayRole, Peer } from "../src/types";
+import { FREE_PAGE_LIMIT, LEGACY_PAGE_LIMIT, verifiedPageLimit, PAGE_LIMIT_DESCRIPTION } from "../src/page-limits";
+import { MAX_RELAY_ASSET_LENGTH, MAX_RELAY_BYTES } from "../src/presentation-size";
 
 const n = z.number().finite();
 const unit = n.min(0).max(1);
 const point = z.object({ x: unit, y: unit });
-const asset = z.string().max(8 * 1024 * 1024).refine(v =>
+const asset = z.string().max(MAX_RELAY_ASSET_LENGTH).refine(v =>
   /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=\s]+$/.test(v) ||
   /^https:\/\/[^\s<>"']+$/.test(v), "Use a raster image or HTTPS image");
 const hotspot = z.object({
@@ -31,22 +33,22 @@ export const lessonSchema = z.object({
       fontSize: n.min(1).max(400).optional(),
     })).max(1000),
     model: z.object({
-      src: z.string().max(8 * 1024 * 1024).refine(v =>
+      src: z.string().max(MAX_RELAY_ASSET_LENGTH).refine(v =>
         /^\/tv-assets\/models\/[a-z0-9-]+\.glb$/.test(v) ||
         /^data:model\/gltf-binary;base64,[A-Za-z0-9+/=\s]+$/.test(v), "Use a supplied or uploaded GLB"),
       name: z.string().max(200), attribution: z.string().max(1000), license: z.string().max(1000),
       hotspots: z.array(hotspot).max(100), cameraOrbit: z.string().max(120).optional(),
     }).optional(),
-  })).min(1).max(60),
+  })).min(1).max(LEGACY_PAGE_LIMIT),
 });
 export const stateSchema = z.object({
-  lesson: lessonSchema, pageIndex: n.int().min(0).max(59), blank: z.boolean(), spotlight: z.boolean(),
+  lesson: lessonSchema, pageIndex: n.int().min(0).max(LEGACY_PAGE_LIMIT - 1), blank: z.boolean(), spotlight: z.boolean(),
   pointer: z.object({ x: unit, y: unit, visible: z.boolean() }),
   timer: z.object({ endsAt: n.min(0).max(9e15).nullable(), remaining: n.min(0).max(86400), running: z.boolean() }),
 }).refine(s => s.pageIndex < s.lesson.pages.length, "Page does not exist");
 export const commandSchema = z.discriminatedUnion("type", [
   ...(["next", "previous", "blank", "spotlight", "reset-view"] as const).map(type => z.object({ type: z.literal(type) })),
-  z.object({ type: z.literal("page"), index: n.int().min(0).max(59) }),
+  z.object({ type: z.literal("page"), index: n.int().min(0).max(LEGACY_PAGE_LIMIT - 1) }),
   z.object({ type: z.literal("pointer"), x: unit, y: unit, visible: z.boolean() }),
   z.object({ type: z.literal("timer"), seconds: n.min(0).max(86400), running: z.boolean() }),
   z.object({ type: z.literal("camera"), orbit: z.string().min(1).max(120) }),
@@ -54,6 +56,7 @@ export const commandSchema = z.discriminatedUnion("type", [
 type Member = Peer & { digest: string };
 type Waiter = { res: Response; key: string; timeout: ReturnType<typeof setTimeout> };
 type Room = {
+  pageLimit: number;
   id: string; host: string; joinCode: string; expiresAt: number; revision: number;
   state: StageState; peers: Map<string, Member>; waiters: Set<Waiter>; bytes: number;
 };
@@ -62,7 +65,7 @@ const secret = () => randomBytes(32).toString("hex");
 const equal = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
 /** No database, account service, telemetry or provider credentials are needed. */
-export function createTvRelay(options: { now?: () => number; ttl?: number; maxRooms?: number } = {}) {
+export function createTvRelay(options: { now?: () => number; ttl?: number; maxRooms?: number; hostedLibrary?: boolean; pageLimitForRequest?: (req: Request) => Promise<number> } = {}) {
   const now = options.now || Date.now;
   const ttl = options.ttl || 4 * 60 * 60 * 1000;
   const rooms = new Map<string, Room>();
@@ -125,8 +128,8 @@ export function createTvRelay(options: { now?: () => number; ttl?: number; maxRo
     if (limited(`all:${req.ip}`, 1400)) return res.status(429).json({ error: "Too many pairing requests. Wait one minute." });
     next();
   });
-  const wrap = (fn: (req: Request, res: Response) => unknown) => (req: Request, res: Response) => {
-    try { return fn(req, res); }
+  const wrap = (fn: (req: Request, res: Response) => unknown) => async (req: Request, res: Response) => {
+    try { return await fn(req, res); }
     catch (error) {
       return res.status(error instanceof z.ZodError ? 400 : 500).json({
         error: error instanceof z.ZodError ? "Invalid presentation data or command." : "Presentation request failed.",
@@ -149,18 +152,25 @@ export function createTvRelay(options: { now?: () => number; ttl?: number; maxRo
     return { room, who, key };
   }
   function parseState(body: any) {
-    if (Buffer.byteLength(JSON.stringify(body) || "") > 12 * 1024 * 1024) return null;
+    if (Buffer.byteLength(JSON.stringify(body) || "") > MAX_RELAY_BYTES) return null;
     return stateSchema.parse(body) as StageState;
   }
-  router.get("/health", (_req, res) => res.json({ ok: true, transport: "https-long-poll", offlinePairing: false }));
-  router.post("/sessions", wrap((req, res) => {
+  router.get("/health", (_req, res) => res.json({ ok: true, transport: "https-long-poll", offlinePairing: false, hostedLibrary: options.hostedLibrary === true }));
+  router.post("/sessions", wrap(async (req, res) => {
     if (limited(`create:${req.ip}`, 10)) return res.status(429).json({ error: "Wait one minute before creating another session." });
     if (rooms.size >= (options.maxRooms || 30) || roomBytes() > 64 * 1024 * 1024)
       return res.status(503).json({ error: "Presentation service is at capacity. Try again later." });
     const state = parseState(req.body?.state);
     if (!state) return res.status(413).json({ error: "Presentation is too large to share (12 MB limit). Export it or reduce image sizes." });
+    const verifiedLimit = options.hostedLibrary && options.pageLimitForRequest ? await options.pageLimitForRequest(req) : FREE_PAGE_LIMIT;
+    const pageLimit = verifiedPageLimit(verifiedLimit);
+    if (state.lesson.pages.length > pageLimit) return res.status(403).json({ error: `Your presentation limit is ${pageLimit} pages (${PAGE_LIMIT_DESCRIPTION}).` });
+    // Subscription lookup is asynchronous; recheck capacity before allocating.
+    if (rooms.size >= (options.maxRooms || 30) || roomBytes() > 64 * 1024 * 1024)
+      return res.status(503).json({ error: "Presentation service is at capacity. Try again later." });
     const id = randomBytes(16).toString("hex"), hostKey = secret();
     const room: Room = {
+      pageLimit,
       id, host: digest(hostKey), joinCode: String(randomInt(100000, 1000000)), expiresAt: now() + ttl,
       revision: 0, state, peers: new Map(), waiters: new Set(), bytes: Buffer.byteLength(JSON.stringify(state)),
     };
@@ -194,6 +204,7 @@ export function createTvRelay(options: { now?: () => number; ttl?: number; maxRo
     const a = access(req, res, true); if (!a) return;
     const state = parseState(req.body?.state);
     if (!state) return res.status(413).json({ error: "Presentation is too large to share (12 MB limit)." });
+    if (state.lesson.pages.length > a.room.pageLimit) return res.status(403).json({ error: `This room's presentation limit is ${a.room.pageLimit} pages.` });
     const bytes = Buffer.byteLength(JSON.stringify(state));
     if (roomBytes() - a.room.bytes + bytes > 80 * 1024 * 1024) return res.status(503).json({ error: "Sharing storage is full. Reduce presentation size." });
     a.room.state = state; a.room.bytes = bytes; changed(a.room);
